@@ -8,3 +8,8 @@ data/
 .vscode/
 .DS_Store
 _build/
+hyq_log2.db
+*.log*
+*.db*
+*.json*
+spinup/algos/pytorch/td3/td3_jo.py
