@@ -2,11 +2,13 @@ from copy import deepcopy
 import itertools
 import numpy as np
 import torch
-from torch.optim import Adam
+from torch.optim import Adam,RMSprop
 import gym
 import time
 import spinup.algos.pytorch.td3.core as core
 from spinup.utils.logx import EpochLogger
+import os
+import random
 
 
 class ReplayBuffer:
@@ -47,7 +49,7 @@ def td3(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         polyak=0.995, pi_lr=1e-3, q_lr=1e-3, batch_size=100, start_steps=10000, 
         update_after=1000, update_every=50, act_noise=0.1, target_noise=0.2, 
         noise_clip=0.5, policy_delay=2, num_test_episodes=10, max_ep_len=1000, 
-        logger_kwargs=dict(), save_freq=1):
+        logger_kwargs=dict(), save_freq=1, random_exploration=0.6):
     """
     Twin Delayed Deep Deterministic Policy Gradient (TD3)
 
@@ -80,7 +82,7 @@ def td3(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
                                            | flatten this!)
             ===========  ================  ======================================
 
-        ac_kwargs (dict): Any kwargs appropriate for the ActorCritic object 
+        ac_kwargs (dict): Any kwargs appropriate for the ActorCritic object
             you provided to TD3.
 
         seed (int): Seed for random number generators.
@@ -145,19 +147,54 @@ def td3(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
             the current policy and value function.
 
     """
+    def seedeverything(seed=2):
+        os.environ['PYTHONHASHSEED'] = str(seed)
+        random.seed(seed)
+        torch.random.manual_seed(seed)
+        torch.manual_seed(seed)
+        np.random.seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        torch.cuda.manual_seed(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    seedeverything()
+
+    env= env_fn
+    #test_env =env_fn()
+    #env, test_env = env_fn(), env_fn()
+    env.seed(2)
+    env.action_space.np_random.seed(2)
 
     logger = EpochLogger(**logger_kwargs)
     logger.save_config(locals())
-
-    torch.manual_seed(seed)
-    np.random.seed(seed)
-
-    env, test_env = env_fn(), env_fn()
+    
     obs_dim = env.observation_space.shape
     act_dim = env.action_space.shape[0]
+    def scale_action(action_space, action):
+        """
+        Rescale the action from [low, high] to [-1, 1]
+        (no need for symmetric action space)
+        :param action_space: (gym.spaces.box.Box)
+        :param action: (np.ndarray)
+        :return: (np.ndarray)
+        """
+        low, high = action_space.low, action_space.high
+        return 2.0 * ((action - low) / (high - low)) - 1.0
 
+
+    def unscale_action(action_space, scaled_action):
+        """
+        Rescale the action from [-1, 1] to [low, high]
+        (no need for symmetric action space)
+        :param action_space: (gym.spaces.box.Box)
+        :param action: (np.ndarray)
+        :return: (np.ndarray)
+        """
+        low, high = action_space.low, action_space.high
+        return low + (0.5 * (scaled_action + 1.0) * (high - low))
     # Action limit for clamping: critically, assumes all dimensions share the same bound!
-    act_limit = env.action_space.high[0]
+    ##act_limit = env.action_space.high[0]
+    act_limit = 1.0
 
     # Create actor-critic module and target networks
     ac = actor_critic(env.observation_space, env.action_space, **ac_kwargs)
@@ -171,7 +208,7 @@ def td3(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
     q_params = itertools.chain(ac.q1.parameters(), ac.q2.parameters())
 
     # Experience buffer
-    replay_buffer = ReplayBuffer(obs_dim=obs_dim, act_dim=act_dim, size=replay_size)
+    replay_buffer = ReplayBuffer(obs_dim=obs_dim, act_dim=act_dim, size=replay_size) #[1M] 5k? 
 
     # Count variables (protip: try to get a feel for how different size networks behave!)
     var_counts = tuple(core.count_vars(module) for module in [ac.pi, ac.q1, ac.q2])
@@ -182,6 +219,7 @@ def td3(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         o, a, r, o2, d = data['obs'], data['act'], data['rew'], data['obs2'], data['done']
 
         q1 = ac.q1(o,a)
+        torch.set_printoptions(profile="default")
         q2 = ac.q2(o,a)
 
         # Bellman backup for Q functions
@@ -218,9 +256,11 @@ def td3(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         return -q1_pi.mean()
 
     # Set up optimizers for policy and q-function
-    pi_optimizer = Adam(ac.pi.parameters(), lr=pi_lr)
-    q_optimizer = Adam(q_params, lr=q_lr)
+    #pi_optimizer = Adam(ac.pi.parameters(), lr=pi_lr)   #RMSprop
+    #q_optimizer = Adam(q_params, lr=q_lr)
 
+    pi_optimizer = RMSprop(ac.pi.parameters(), lr=pi_lr)   #RMSprop
+    q_optimizer = RMSprop(q_params, lr=q_lr)
     # Set up model saving
     logger.setup_pytorch_saver(ac)
 
@@ -276,26 +316,28 @@ def td3(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
                 o, r, d, _ = test_env.step(get_action(o, 0))
                 ep_ret += r
                 ep_len += 1
-            logger.store(TestEpRet=ep_ret, TestEpLen=ep_len)
+            #logger.store(TestEpRet=ep_ret, TestEpLen=ep_len)
 
     # Prepare for interaction with environment
     total_steps = steps_per_epoch * epochs
     start_time = time.time()
     o, ep_ret, ep_len = env.reset(), 0, 0
-
     # Main loop: collect experience in env and update/log each epoch
     for t in range(total_steps):
-        
         # Until start_steps have elapsed, randomly sample actions
         # from a uniform distribution for better exploration. Afterwards, 
-        # use the learned policy (with some noise, via act_noise). 
-        if t > start_steps:
-            a = get_action(o, act_noise)
+        # use the learned policy (with some noise, via act_noise).
+        if t > start_steps and np.random.rand() > random_exploration:  
+            ##a = get_action(o, act_noise)  
+            a = get_action(o, act_noise) 
+            unscaled_action = unscale_action(env.action_space, a)
+            ##a = unscaled_action
+            #print('a after get_action',a)  #999~1001  1999~20001 every 1000th time update action whethet the same
         else:
-            a = env.action_space.sample()
-
+            unscaled_action = env.action_space.sample()
+            a = scale_action(env.action_space, unscaled_action)
         # Step the env
-        o2, r, d, _ = env.step(a)
+        o2, r, d, _ = env.step(unscaled_action)
         ep_ret += r
         ep_len += 1
 
@@ -315,7 +357,6 @@ def td3(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         if d or (ep_len == max_ep_len):
             logger.store(EpRet=ep_ret, EpLen=ep_len)
             o, ep_ret, ep_len = env.reset(), 0, 0
-
         # Update handling
         if t >= update_after and t % update_every == 0:
             for j in range(update_every):
@@ -325,20 +366,19 @@ def td3(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         # End of epoch handling
         if (t+1) % steps_per_epoch == 0:
             epoch = (t+1) // steps_per_epoch
-
             # Save model
             if (epoch % save_freq == 0) or (epoch == epochs):
                 logger.save_state({'env': env}, None)
 
             # Test the performance of the deterministic version of the agent.
-            test_agent()
+            #test_agent()
 
             # Log info about epoch
             logger.log_tabular('Epoch', epoch)
             logger.log_tabular('EpRet', with_min_and_max=True)
-            logger.log_tabular('TestEpRet', with_min_and_max=True)
+            #logger.log_tabular('TestEpRet', with_min_and_max=True)
             logger.log_tabular('EpLen', average_only=True)
-            logger.log_tabular('TestEpLen', average_only=True)
+            #logger.log_tabular('TestEpLen', average_only=True)
             logger.log_tabular('TotalEnvInteracts', t)
             logger.log_tabular('Q1Vals', with_min_and_max=True)
             logger.log_tabular('Q2Vals', with_min_and_max=True)

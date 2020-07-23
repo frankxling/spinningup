@@ -5,7 +5,10 @@ import time
 from spinup.algos.tf1.td3 import core
 from spinup.algos.tf1.td3.core import get_vars
 from spinup.utils.logx import EpochLogger
-
+import random,os
+config = tf.ConfigProto(intra_op_parallelism_threads=1, inter_op_parallelism_threads=1)
+config.gpu_options.allow_growth = True
+session = tf.Session(config=config)
 
 class ReplayBuffer:
     """
@@ -142,10 +145,37 @@ def td3(env_fn, actor_critic=core.mlp_actor_critic, ac_kwargs=dict(), seed=0,
     logger = EpochLogger(**logger_kwargs)
     logger.save_config(locals())
 
-    tf.set_random_seed(seed)
-    np.random.seed(seed)
+    def set_seeds(seed=seed):
+        os.environ['PYTHONHASHSEED'] = str(seed)
+        random.seed(seed)
+        tf.set_random_seed(seed)
+        np.random.seed(seed)
+        """
+            Enable 100% reproducibility on operations related to tensor and randomness.
+            Parameters:
+            seed (int): seed value for global randomness
+            fast_n_close (bool): whether to achieve efficient at the cost of determinism/reproducibility
+        """
+        #set_seeds(seed=seed)
 
-    env, test_env = env_fn(), env_fn()
+        #logging.warning("*******************************************************************************")
+        #logging.warning("*** set_global_determinism is called,setting full determinism, will be slow ***")
+        #logging.warning("*******************************************************************************")
+
+        os.environ['TF_DETERMINISTIC_OPS'] = '1'
+        os.environ['TF_CUDNN_DETERMINISTIC'] = '1'
+        # https://www.tensorflow.org/api_docs/python/tf/config/threading/set_inter_op_parallelism_threads
+        tf.config.threading.set_inter_op_parallelism_threads(1)
+        tf.config.threading.set_intra_op_parallelism_threads(1)
+        #from tfdeterminism import patch
+        #patch()
+    np.random.seed(seed)
+    random.seed(seed)
+    set_seeds(seed=2)
+    env = env_fn()
+    env.seed(seed)
+    env.action_space.seed(seed)
+    #env, test_env = env_fn(), env_fn()
     obs_dim = env.observation_space.shape[0]
     act_dim = env.action_space.shape[0]
 
@@ -194,7 +224,8 @@ def td3(env_fn, actor_critic=core.mlp_actor_critic, ac_kwargs=dict(), seed=0,
     q1_loss = tf.reduce_mean((q1-backup)**2)
     q2_loss = tf.reduce_mean((q2-backup)**2)
     q_loss = q1_loss + q2_loss
-
+    global_step1 = tf.Variable(0, trainable=False)
+    global_step2 = tf.Variable(0, trainable=False)
     # Separate train ops for pi, q
     pi_optimizer = tf.train.AdamOptimizer(learning_rate=pi_lr)
     q_optimizer = tf.train.AdamOptimizer(learning_rate=q_lr)
@@ -226,7 +257,7 @@ def td3(env_fn, actor_critic=core.mlp_actor_critic, ac_kwargs=dict(), seed=0,
             o, d, ep_ret, ep_len = test_env.reset(), False, 0, 0
             while not(d or (ep_len == max_ep_len)):
                 # Take deterministic actions at test time (noise_scale=0)
-                o, r, d, _ = test_env.step(get_action(o, 0))
+                o, r, d, _ = test_env.step(get_action(o, 0))  # _ no processing this _ , need to let Spinning up to buffer & let optuna acces _ 
                 ep_ret += r
                 ep_len += 1
             logger.store(TestEpRet=ep_ret, TestEpLen=ep_len)
@@ -269,7 +300,7 @@ def td3(env_fn, actor_critic=core.mlp_actor_critic, ac_kwargs=dict(), seed=0,
             o, ep_ret, ep_len = env.reset(), 0, 0
 
         # Update handling
-        if t >= update_after and t % update_every == 0:
+        if t >= update_after and t % update_every == 0:   # update_after=1000, update_every=50
             for j in range(update_every):
                 batch = replay_buffer.sample_batch(batch_size)
                 feed_dict = {x_ph: batch['obs1'],
@@ -296,14 +327,14 @@ def td3(env_fn, actor_critic=core.mlp_actor_critic, ac_kwargs=dict(), seed=0,
                 logger.save_state({'env': env}, None)
 
             # Test the performance of the deterministic version of the agent.
-            test_agent()
+            #test_agent()
 
             # Log info about epoch
             logger.log_tabular('Epoch', epoch)
             logger.log_tabular('EpRet', with_min_and_max=True)
-            logger.log_tabular('TestEpRet', with_min_and_max=True)
+            #logger.log_tabular('TestEpRet', with_min_and_max=True)
             logger.log_tabular('EpLen', average_only=True)
-            logger.log_tabular('TestEpLen', average_only=True)
+            #logger.log_tabular('TestEpLen', average_only=True)
             logger.log_tabular('TotalEnvInteracts', t)
             logger.log_tabular('Q1Vals', with_min_and_max=True)
             logger.log_tabular('Q2Vals', with_min_and_max=True)
@@ -315,7 +346,7 @@ def td3(env_fn, actor_critic=core.mlp_actor_critic, ac_kwargs=dict(), seed=0,
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--env', type=str, default='HalfCheetah-v2')
+    parser.add_argument('--env', type=str, default='LobotArmContinuous-v6')
     parser.add_argument('--hid', type=int, default=256)
     parser.add_argument('--l', type=int, default=2)
     parser.add_argument('--gamma', type=float, default=0.99)
