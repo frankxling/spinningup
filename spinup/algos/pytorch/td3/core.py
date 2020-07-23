@@ -22,15 +22,14 @@ def count_vars(module):
 
 class MLPActor(nn.Module):
 
-    def __init__(self, obs_dim, act_dim, hidden_sizes, activation, act_limit):
+    def __init__(self, obs_dim, act_dim, hidden_sizes, activation):
         super().__init__()
         pi_sizes = [obs_dim] + list(hidden_sizes) + [act_dim]
         self.pi = mlp(pi_sizes, activation, nn.Tanh)
-        self.act_limit = act_limit
 
     def forward(self, obs):
         # Return output from network scaled to action space limits.
-        return self.act_limit * self.pi(obs)
+        return self.pi(obs)
 
 class MLPQFunction(nn.Module):
 
@@ -54,7 +53,7 @@ class MLPActorCritic(nn.Module):
         act_limit = 1.0
 
         # build policy and value functions
-        self.pi = MLPActor(obs_dim, act_dim, hidden_sizes, activation, act_limit)
+        self.pi = MLPActor(obs_dim, act_dim, hidden_sizes, activation)
         self.q1 = MLPQFunction(obs_dim, act_dim, hidden_sizes, activation)
         self.q2 = MLPQFunction(obs_dim, act_dim, hidden_sizes, activation)
 
