@@ -6,7 +6,6 @@ import numpy as np
 import torch
 from torch.optim import Adam
 from typing import Dict, Union, Callable
-import gym
 import time
 import spinup.algos.pytorch.td3.core as core
 from spinup.utils.logx import EpochLogger
@@ -32,8 +31,8 @@ class ReplayBuffer:
         self.act_buf[self.ptr] = act
         self.rew_buf[self.ptr] = rew
         self.done_buf[self.ptr] = done
-        self.ptr = (self.ptr+1) % self.max_size
-        self.size = min(self.size+1, self.max_size)
+        self.ptr = (self.ptr + 1) % self.max_size
+        self.size = min(self.size + 1, self.max_size)
 
     def sample_batch(self, batch_size=32):
         idxs = np.random.randint(0, self.size, size=batch_size)
@@ -42,7 +41,7 @@ class ReplayBuffer:
                      act=self.act_buf[idxs],
                      rew=self.rew_buf[idxs],
                      done=self.done_buf[idxs])
-        return {k: torch.as_tensor(v, dtype=torch.float32) for k,v in batch.items()}
+        return {k: torch.as_tensor(v, dtype=torch.float32) for k, v in batch.items()}
 
 
 def td3(env_fn: Callable,
@@ -50,7 +49,7 @@ def td3(env_fn: Callable,
         ac_kwargs: Dict = None,
         seed: int = 0,
         steps_per_epoch: int = 4000,
-        epochs: int = 100,
+        epochs: int = 2000,
         replay_size: int = int(1e6),
         gamma: float = 0.99,
         polyak: float = 0.995,
@@ -67,8 +66,8 @@ def td3(env_fn: Callable,
         num_test_episodes: int = 3,
         max_ep_len: int = 1000,
         logger_kwargs: Dict = None,
-        save_freq: int = 1):
-
+        save_freq: int = 1,
+        random_exploration: Union[Callable, float] = lambda step: max(0.8 - 1e-4 * step, 0.05)):
     """
     Twin Delayed Deep Deterministic Policy Gradient (TD3)
 
@@ -165,6 +164,9 @@ def td3(env_fn: Callable,
         save_freq (int): How often (in terms of gap between epochs) to save
             the current policy and value function.
 
+        random_exploration (float or callable): Probability to randomly select
+            an action instead of selecting from policy.
+
     """
 
     if logger_kwargs is None:
@@ -182,6 +184,7 @@ def td3(env_fn: Callable,
     q_learning_rate_fn = get_schedule_fn(q_lr)
     pi_learning_rate_fn = get_schedule_fn(pi_lr)
     act_noise_fn = get_schedule_fn(act_noise)
+    epsilon_fn = get_schedule_fn(random_exploration)
 
     env, test_env = env_fn(), env_fn()
     obs_dim = env.observation_space.shape
@@ -200,13 +203,12 @@ def td3(env_fn: Callable,
         low, high = action_space.low, action_space.high
         return 2.0 * ((action - low) / (high - low)) - 1.0
 
-
     def unscale_action(action_space, scaled_action):
         """
         Rescale the action from [-1, 1] to [low, high]
         (no need for symmetric action space)
         :param action_space: (gym.spaces.box.Box)
-        :param action: (np.ndarray)
+        :param scaled_action: (np.ndarray)
         :return: (np.ndarray)
         """
         low, high = action_space.low, action_space.high
@@ -221,7 +223,7 @@ def td3(env_fn: Callable,
     # Freeze target networks with respect to optimizers (only update via polyak averaging)
     for p in ac_targ.parameters():
         p.requires_grad = False
-        
+
     # List of parameters for both Q-networks (save this for convenience)
     q_params = itertools.chain(ac.q1.parameters(), ac.q2.parameters())
 
@@ -230,15 +232,16 @@ def td3(env_fn: Callable,
 
     # Count variables (protip: try to get a feel for how different size networks behave!)
     var_counts = tuple(core.count_vars(module) for module in [ac.pi, ac.q1, ac.q2])
-    logger.log('\nNumber of parameters: \t pi: %d, \t q1: %d, \t q2: %d\n'%var_counts)
+    logger.log('\nNumber of parameters: \t pi: %d, \t q1: %d, \t q2: %d\n' % var_counts)
 
     torch.set_printoptions(profile="default")
+
     # Set up function for computing TD3 Q-losses
     def compute_loss_q(data):
         o, a, r, o2, d = data['obs'], data['act'], data['rew'], data['obs2'], data['done']
 
-        q1 = ac.q1(o,a)
-        q2 = ac.q2(o,a)
+        q1 = ac.q1(o, a)
+        q2 = ac.q2(o, a)
 
         # Bellman backup for Q functions
         with torch.no_grad():
@@ -257,8 +260,8 @@ def td3(env_fn: Callable,
             backup = r + gamma * (1 - d) * q_pi_targ
 
         # MSE loss against Bellman backup
-        loss_q1 = ((q1 - backup)**2).mean()
-        loss_q2 = ((q2 - backup)**2).mean()
+        loss_q1 = ((q1 - backup) ** 2).mean()
+        loss_q2 = ((q2 - backup) ** 2).mean()
         loss_q = loss_q1 + loss_q2
 
         # Useful info for logging
@@ -327,7 +330,7 @@ def td3(env_fn: Callable,
     def test_agent():
         for _ in range(num_test_episodes):
             o, d, ep_ret, ep_len = test_env.reset(), False, 0, 0
-            while not(d or (ep_len == max_ep_len)):
+            while not (d or (ep_len == max_ep_len)):
                 # Take deterministic actions at test time (noise_scale=0)
                 o, r, d, _ = test_env.step(get_action(o, 0))
                 ep_ret += r
@@ -343,7 +346,7 @@ def td3(env_fn: Callable,
         # Until start_steps have elapsed, randomly sample actions
         # from a uniform distribution for better exploration. Afterwards, 
         # use the learned policy (with some noise, via act_noise).
-        if t > start_steps:
+        if t > start_steps and np.random.rand() > epsilon_fn(t):
             a = get_action(o, act_noise_fn(t))
             unscaled_action = unscale_action(env.action_space, a)
         else:
@@ -357,7 +360,7 @@ def td3(env_fn: Callable,
         # Ignore the "done" signal if it comes from hitting the time
         # horizon (that is, when it's an artificial terminal signal
         # that isn't based on the agent's state)
-        d = False if ep_len==max_ep_len else d
+        d = False if ep_len == max_ep_len else d
 
         # Store experience to replay buffer
         replay_buffer.store(o, a, r, o2, d)
@@ -378,11 +381,11 @@ def td3(env_fn: Callable,
                 update(data=batch, timer=j)
 
         # End of epoch handling
-        if (t+1) % steps_per_epoch == 0:
+        if (t + 1) % steps_per_epoch == 0:
             # Perform LR decay
             update_learning_rate(q_optimizer, q_learning_rate_fn(t))
             update_learning_rate(pi_optimizer, pi_learning_rate_fn(t))
-            epoch = (t+1) // steps_per_epoch
+            epoch = (t + 1) // steps_per_epoch
             # Save model
             if (epoch % save_freq == 0) or (epoch == epochs):
                 logger.save_state({'env': env}, None)
@@ -401,7 +404,7 @@ def td3(env_fn: Callable,
             logger.log_tabular('Q2Vals', with_min_and_max=True)
             logger.log_tabular('LossPi', average_only=True)
             logger.log_tabular('LossQ', average_only=True)
-            logger.log_tabular('Time', time.time()-start_time)
+            logger.log_tabular('Time', time.time() - start_time)
             logger.dump_tabular()
 
 
