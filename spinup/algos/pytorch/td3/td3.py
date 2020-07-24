@@ -1,12 +1,16 @@
 from copy import deepcopy
+import os
+import random
 import itertools
 import numpy as np
 import torch
 from torch.optim import Adam
+from typing import Dict, Union, Callable
 import gym
 import time
 import spinup.algos.pytorch.td3.core as core
 from spinup.utils.logx import EpochLogger
+from spinup.utils.torch_algo_utils import update_learning_rate, get_schedule_fn
 
 
 class ReplayBuffer:
@@ -41,13 +45,30 @@ class ReplayBuffer:
         return {k: torch.as_tensor(v, dtype=torch.float32) for k,v in batch.items()}
 
 
+def td3(env_fn: Callable,
+        actor_critic: torch.nn.Module = core.MLPActorCritic,
+        ac_kwargs: Dict = None,
+        seed: int = 0,
+        steps_per_epoch: int = 4000,
+        epochs: int = 100,
+        replay_size: int = int(1e6),
+        gamma: float = 0.99,
+        polyak: float = 0.995,
+        pi_lr: Union[Callable, float] = 1e-3,
+        q_lr: Union[Callable, float] = 1e-3,
+        batch_size: int = 100,
+        start_steps: int = 10000,
+        update_after: int = 1000,
+        update_every: int = 50,
+        act_noise: Union[Callable, float] = 0.1,
+        target_noise: float = 0.2,
+        noise_clip: float = 0.5,
+        policy_delay: int = 2,
+        num_test_episodes: int = 3,
+        max_ep_len: int = 1000,
+        logger_kwargs: Dict = None,
+        save_freq: int = 1):
 
-def td3(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
-        steps_per_epoch=4000, epochs=100, replay_size=int(1e6), gamma=0.99, 
-        polyak=0.995, pi_lr=1e-3, q_lr=1e-3, batch_size=100, start_steps=10000, 
-        update_after=1000, update_every=50, act_noise=0.1, target_noise=0.2, 
-        noise_clip=0.5, policy_delay=2, num_test_episodes=10, max_ep_len=1000, 
-        logger_kwargs=dict(), save_freq=1):
     """
     Twin Delayed Deep Deterministic Policy Gradient (TD3)
 
@@ -104,9 +125,9 @@ def td3(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
             where :math:`\\rho` is polyak. (Always between 0 and 1, usually 
             close to 1.)
 
-        pi_lr (float): Learning rate for policy.
+        pi_lr (float or callable): Learning rate for policy.
 
-        q_lr (float): Learning rate for Q-networks.
+        q_lr (float or callable): Learning rate for Q-networks.
 
         batch_size (int): Minibatch size for SGD.
 
@@ -122,7 +143,7 @@ def td3(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
             you wait between updates, the ratio of env steps to gradient steps 
             is locked to 1.
 
-        act_noise (float): Stddev for Gaussian exploration noise added to 
+        act_noise (float or callable): Stddev for Gaussian exploration noise added to
             policy at training time. (At test time, no noise is added.)
 
         target_noise (float): Stddev for smoothing noise added to target 
@@ -146,16 +167,27 @@ def td3(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
 
     """
 
+    if logger_kwargs is None:
+        logger_kwargs = dict()
+    if ac_kwargs is None:
+        ac_kwargs = dict()
     logger = EpochLogger(**logger_kwargs)
     logger.save_config(locals())
 
     torch.manual_seed(seed)
     np.random.seed(seed)
+    random.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+
+    q_learning_rate_fn = get_schedule_fn(q_lr)
+    pi_learning_rate_fn = get_schedule_fn(pi_lr)
+    act_noise_fn = get_schedule_fn(act_noise)
 
     env, test_env = env_fn(), env_fn()
     obs_dim = env.observation_space.shape
     act_dim = env.action_space.shape[0]
 
+    env.action_space.seed(seed)
 
     def scale_action(action_space, action):
         """
@@ -242,8 +274,8 @@ def td3(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         return -q1_pi.mean()
 
     # Set up optimizers for policy and q-function
-    pi_optimizer = Adam(ac.pi.parameters(), lr=pi_lr)
-    q_optimizer = Adam(q_params, lr=q_lr)
+    pi_optimizer = Adam(ac.pi.parameters(), lr=pi_learning_rate_fn(0))
+    q_optimizer = Adam(q_params, lr=q_learning_rate_fn(0))
 
     # Set up model saving
     logger.setup_pytorch_saver(ac)
@@ -293,7 +325,7 @@ def td3(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         return np.clip(a, -act_limit, act_limit)
 
     def test_agent():
-        for j in range(num_test_episodes):
+        for _ in range(num_test_episodes):
             o, d, ep_ret, ep_len = test_env.reset(), False, 0, 0
             while not(d or (ep_len == max_ep_len)):
                 # Take deterministic actions at test time (noise_scale=0)
@@ -312,7 +344,7 @@ def td3(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         # from a uniform distribution for better exploration. Afterwards, 
         # use the learned policy (with some noise, via act_noise).
         if t > start_steps:
-            a = get_action(o, act_noise)
+            a = get_action(o, act_noise_fn(t))
             unscaled_action = unscale_action(env.action_space, a)
         else:
             unscaled_action = env.action_space.sample()
@@ -347,8 +379,10 @@ def td3(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
 
         # End of epoch handling
         if (t+1) % steps_per_epoch == 0:
+            # Perform LR decay
+            update_learning_rate(q_optimizer, q_learning_rate_fn(t))
+            update_learning_rate(pi_optimizer, pi_learning_rate_fn(t))
             epoch = (t+1) // steps_per_epoch
-
             # Save model
             if (epoch % save_freq == 0) or (epoch == epochs):
                 logger.save_state({'env': env}, None)
@@ -370,22 +404,6 @@ def td3(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
             logger.log_tabular('Time', time.time()-start_time)
             logger.dump_tabular()
 
+
 if __name__ == '__main__':
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--env', type=str, default='HalfCheetah-v2')
-    parser.add_argument('--hid', type=int, default=256)
-    parser.add_argument('--l', type=int, default=2)
-    parser.add_argument('--gamma', type=float, default=0.99)
-    parser.add_argument('--seed', '-s', type=int, default=0)
-    parser.add_argument('--epochs', type=int, default=50)
-    parser.add_argument('--exp_name', type=str, default='td3')
-    args = parser.parse_args()
-
-    from spinup.utils.run_utils import setup_logger_kwargs
-    logger_kwargs = setup_logger_kwargs(args.exp_name, args.seed)
-
-    td3(lambda : gym.make(args.env), actor_critic=core.MLPActorCritic,
-        ac_kwargs=dict(hidden_sizes=[args.hid]*args.l), 
-        gamma=args.gamma, seed=args.seed, epochs=args.epochs,
-        logger_kwargs=logger_kwargs)
+    raise NotImplementedError("This file is not supposed to be ran, please use another script to run this file")
