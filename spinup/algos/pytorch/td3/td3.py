@@ -332,7 +332,9 @@ def td3(env_fn: Callable,
             o, d, ep_ret, ep_len = test_env.reset(), False, 0, 0
             while not (d or (ep_len == max_ep_len)):
                 # Take deterministic actions at test time (noise_scale=0)
-                o, r, d, _ = test_env.step(get_action(o, 0))
+                scaled_action = get_action(o, 0)
+                a = unscale_action(env.action_space, scaled_action)
+                o, r, d, _ = test_env.step(a)
                 ep_ret += r
                 ep_len += 1
             logger.store(TestEpRet=ep_ret, TestEpLen=ep_len)
@@ -388,7 +390,7 @@ def td3(env_fn: Callable,
             epoch = (t + 1) // steps_per_epoch
             # Save model
             if (epoch % save_freq == 0) or (epoch == epochs):
-                logger.save_state({'env': env}, None)
+                logger.save_state({}, None)
 
             # Test the performance of the deterministic version of the agent.
             test_agent()
