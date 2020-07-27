@@ -10,6 +10,9 @@ import time
 import spinup.algos.pytorch.td3.core as core
 from spinup.utils.logx import EpochLogger
 from spinup.utils.torch_algo_utils import update_learning_rate, get_schedule_fn
+# import tracemalloc
+import gc
+import resource
 
 
 class ReplayBuffer:
@@ -168,7 +171,6 @@ def td3(env_fn: Callable,
             an action instead of selecting from policy.
 
     """
-
     if logger_kwargs is None:
         logger_kwargs = dict()
     if ac_kwargs is None:
@@ -332,7 +334,8 @@ def td3(env_fn: Callable,
             o, d, ep_ret, ep_len = test_env.reset(), False, 0, 0
             while not (d or (ep_len == max_ep_len)):
                 # Take deterministic actions at test time (noise_scale=0)
-                o, r, d, _ = test_env.step(get_action(o, 0))
+                scaled_action = get_action(o, 0)
+                o, r, d, _ = test_env.step(unscale_action(env.action_space, scaled_action))
                 ep_ret += r
                 ep_len += 1
             logger.store(TestEpRet=ep_ret, TestEpLen=ep_len)
@@ -342,6 +345,7 @@ def td3(env_fn: Callable,
     start_time = time.time()
     o, ep_ret, ep_len = env.reset(), 0, 0
     # Main loop: collect experience in env and update/log each epoch
+    prev_snapshot = None
     for t in range(total_steps):
         # Until start_steps have elapsed, randomly sample actions
         # from a uniform distribution for better exploration. Afterwards, 
@@ -387,8 +391,8 @@ def td3(env_fn: Callable,
             update_learning_rate(pi_optimizer, pi_learning_rate_fn(t))
             epoch = (t + 1) // steps_per_epoch
             # Save model
-            if (epoch % save_freq == 0) or (epoch == epochs):
-                logger.save_state({'env': env}, None)
+            # if (epoch % save_freq == 0) or (epoch == epochs):
+                # logger.save_state({'env': env}, None)
 
             # Test the performance of the deterministic version of the agent.
             test_agent()
@@ -396,9 +400,9 @@ def td3(env_fn: Callable,
             # Log info about epoch
             logger.log_tabular('Epoch', epoch)
             logger.log_tabular('EpRet', with_min_and_max=True)
-            logger.log_tabular('TestEpRet', with_min_and_max=True)
+            # logger.log_tabular('TestEpRet', with_min_and_max=True)
             logger.log_tabular('EpLen', average_only=True)
-            logger.log_tabular('TestEpLen', average_only=True)
+            # logger.log_tabular('TestEpLen', average_only=True)
             logger.log_tabular('TotalEnvInteracts', t)
             logger.log_tabular('Q1Vals', with_min_and_max=True)
             logger.log_tabular('Q2Vals', with_min_and_max=True)
@@ -406,6 +410,21 @@ def td3(env_fn: Callable,
             logger.log_tabular('LossQ', average_only=True)
             logger.log_tabular('Time', time.time() - start_time)
             logger.dump_tabular()
+            gc.collect()
+            maxrss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+            print(f"Mem usage: {maxrss}")
+            # filter = tracemalloc.Filter(False, tracemalloc.__file__)
+            # snapshot = tracemalloc.take_snapshot()
+            # if prev_snapshot is not None:
+            #     top_stats = snapshot.filter_traces(filters=[filter]).compare_to(prev_snapshot, 'lineno')
+            #     print("[ Top 50 ]")
+            #     print("---------------------------")
+            #     for stat in top_stats[:50]:
+            #         print(stat)
+            #         for line in stat.traceback.format():
+            #             print(line)
+            #         print("---------------------------")
+            # prev_snapshot = snapshot
 
 
 if __name__ == '__main__':
