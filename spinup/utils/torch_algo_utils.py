@@ -26,23 +26,15 @@ def get_schedule_fn(value_schedule: Union[Callable, float]) -> Callable:
     # create a constant function
     if isinstance(value_schedule, (float, int)):
         # Cast to float to avoid errors
-        value_schedule = constant_fn(float(value_schedule))
+        value_schedule = ConstCallable(float(value_schedule))
     else:
         assert callable(value_schedule)
     return value_schedule
 
 
-def constant_fn(val: float) -> Callable:
-    """
-    Create a function that returns a constant
-    It is useful for learning rate schedule (to avoid code duplication)
+class ConstCallable:
+    def __init__(self, const_val: float):
+        self.const_val = const_val
 
-    :param val: (float)
-    :return: (Callable)
-    """
-
-    def func(_):
-        return val
-
-    return func
-
+    def __call__(self, timestep):
+        return self.const_val
