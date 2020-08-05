@@ -10,6 +10,37 @@ import time
 import spinup.algos.pytorch.td3.core as core
 from spinup.utils.logx import EpochLogger
 from spinup.utils.torch_algo_utils import update_learning_rate, get_schedule_fn
+import glob
+
+def scale_action(action_space, action):
+    """
+    Rescale the action from [low, high] to [-1, 1]
+    (no need for symmetric action space)
+    :param action_space: (gym.spaces.box.Box)
+    :param action: (np.ndarray)
+    :return: (np.ndarray)
+    """
+    low, high = action_space.low, action_space.high
+    return 2.0 * ((action - low) / (high - low)) - 1.0
+
+def unscale_action(action_space, scaled_action):
+    """
+    Rescale the action from [-1, 1] to [low, high]
+    (no need for symmetric action space)
+    :param action_space: (gym.spaces.box.Box)
+    :param scaled_action: (np.ndarray)
+    :return: (np.ndarray)
+    """
+    low, high = action_space.low, action_space.high
+    return low + (0.5 * (scaled_action + 1.0) * (high - low))
+
+def load_latest_state_dict(path: str):
+    files_path = os.path.join(path, '*.pt')
+    list_of_files = glob.glob(files_path)
+    latest_save_file = max(list_of_files, key=os.path.getctime)
+    state_dict = torch.load(latest_save_file)
+    return state_dict
+
 
 
 class ReplayBuffer:
@@ -58,7 +89,7 @@ def td3(env_fn: Callable,
         batch_size: int = 100,
         start_steps: int = 10000,
         update_after: int = 1000,
-        update_every: int = 50,
+        update_every: int = 100,
         act_noise: Union[Callable, float] = 0.1,
         target_noise: float = 0.2,
         noise_clip: float = 0.5,
@@ -67,7 +98,9 @@ def td3(env_fn: Callable,
         max_ep_len: int = 1000,
         logger_kwargs: Dict = None,
         save_freq: int = 1,
-        random_exploration: Union[Callable, float] = lambda step: max(0.8 - 1e-4 * step, 0.05)):
+        random_exploration: Union[Callable, float] = 0.0,
+        save_model_path: str = None,
+        load_model_path: str = None):
     """
     Twin Delayed Deep Deterministic Policy Gradient (TD3)
 
@@ -173,62 +206,81 @@ def td3(env_fn: Callable,
         logger_kwargs = dict()
     if ac_kwargs is None:
         ac_kwargs = dict()
-    logger = EpochLogger(**logger_kwargs)
-    logger.save_config(locals())
+    # Initialisation
+    loaded_state_dict = None
+    if load_model_path is not None:
+        logger = EpochLogger(**logger_kwargs)
+        logger.save_config(locals())
+        loaded_state_dict = load_latest_state_dict(load_model_path)
+        logger.epoch_dict = loaded_state_dict['logger_epoch_dict']
+        q_learning_rate_fn = loaded_state_dict['q_learning_rate_fn']
+        pi_learning_rate_fn = loaded_state_dict['pi_learning_rate_fn']
+        epsilon_fn = loaded_state_dict['epsilon_fn']
+        act_noise_fn = loaded_state_dict['act_noise_fn']
+        replay_buffer = loaded_state_dict['replay_buffer']
+        env, test_env = loaded_state_dict['env'], loaded_state_dict['test_env']
+        ac = actor_critic(env.observation_space, env.action_space, **ac_kwargs)
+        ac_targ = deepcopy(ac)
+        ac.load_state_dict(loaded_state_dict['ac'])
+        ac_targ.load_state_dict(loaded_state_dict['ac_targ'])
+        obs_dim = env.observation_space.shape
+        act_dim = env.action_space.shape[0]
+        env.action_space.np_random.set_state(loaded_state_dict['action_space_state'])
 
-    torch.manual_seed(seed)
-    np.random.seed(seed)
-    random.seed(seed)
-    os.environ['PYTHONHASHSEED'] = str(seed)
+        # List of parameters for both Q-networks (save this for convenience)
+        q_params = itertools.chain(ac.q1.parameters(), ac.q2.parameters())
+        t_ori = loaded_state_dict['t']
+        pi_optimizer = Adam(ac.pi.parameters(), lr=pi_learning_rate_fn(t_ori))
+        pi_optimizer.load_state_dict(loaded_state_dict['pi_optimizer'])
+        q_optimizer = Adam(q_params, lr=q_learning_rate_fn(t_ori))
+        q_optimizer.load_state_dict(loaded_state_dict['q_optimizer'])
+        np.random.set_state(loaded_state_dict['np_rng_state'])
+        torch.set_rng_state(loaded_state_dict['torch_rng_state'])
 
-    q_learning_rate_fn = get_schedule_fn(q_lr)
-    pi_learning_rate_fn = get_schedule_fn(pi_lr)
-    act_noise_fn = get_schedule_fn(act_noise)
-    epsilon_fn = get_schedule_fn(random_exploration)
+    else:
+        logger = EpochLogger(**logger_kwargs)
+        logger.save_config(locals())
 
-    env, test_env = env_fn(), env_fn()
-    obs_dim = env.observation_space.shape
-    act_dim = env.action_space.shape[0]
+        torch.manual_seed(seed)
+        np.random.seed(seed)
+        random.seed(seed)
+        os.environ['PYTHONHASHSEED'] = str(seed)
 
-    env.action_space.seed(seed)
+        q_learning_rate_fn = get_schedule_fn(q_lr)
+        pi_learning_rate_fn = get_schedule_fn(pi_lr)
+        act_noise_fn = get_schedule_fn(act_noise)
+        epsilon_fn = get_schedule_fn(random_exploration)
 
-    def scale_action(action_space, action):
-        """
-        Rescale the action from [low, high] to [-1, 1]
-        (no need for symmetric action space)
-        :param action_space: (gym.spaces.box.Box)
-        :param action: (np.ndarray)
-        :return: (np.ndarray)
-        """
-        low, high = action_space.low, action_space.high
-        return 2.0 * ((action - low) / (high - low)) - 1.0
+        env, test_env = env_fn(), env_fn()
+        obs_dim = env.observation_space.shape
+        act_dim = env.action_space.shape[0]
 
-    def unscale_action(action_space, scaled_action):
-        """
-        Rescale the action from [-1, 1] to [low, high]
-        (no need for symmetric action space)
-        :param action_space: (gym.spaces.box.Box)
-        :param scaled_action: (np.ndarray)
-        :return: (np.ndarray)
-        """
-        low, high = action_space.low, action_space.high
-        return low + (0.5 * (scaled_action + 1.0) * (high - low))
+        env.action_space.seed(seed)
+
+        # Experience buffer
+        replay_buffer = ReplayBuffer(obs_dim=obs_dim, act_dim=act_dim, size=replay_size)
+
+
+        # Create actor-critic module and target networks
+        ac = actor_critic(env.observation_space, env.action_space, **ac_kwargs)
+        ac_targ = deepcopy(ac)
+
+        # List of parameters for both Q-networks (save this for convenience)
+        q_params = itertools.chain(ac.q1.parameters(), ac.q2.parameters())
+
+        # Set up optimizers for policy and q-function
+        pi_optimizer = Adam(ac.pi.parameters(), lr=pi_learning_rate_fn(0))
+        q_optimizer = Adam(q_params, lr=q_learning_rate_fn(0))
+        t_ori = 0
 
     act_limit = 1.0
 
-    # Create actor-critic module and target networks
-    ac = actor_critic(env.observation_space, env.action_space, **ac_kwargs)
-    ac_targ = deepcopy(ac)
 
     # Freeze target networks with respect to optimizers (only update via polyak averaging)
     for p in ac_targ.parameters():
         p.requires_grad = False
 
-    # List of parameters for both Q-networks (save this for convenience)
-    q_params = itertools.chain(ac.q1.parameters(), ac.q2.parameters())
 
-    # Experience buffer
-    replay_buffer = ReplayBuffer(obs_dim=obs_dim, act_dim=act_dim, size=replay_size)
 
     # Count variables (protip: try to get a feel for how different size networks behave!)
     var_counts = tuple(core.count_vars(module) for module in [ac.pi, ac.q1, ac.q2])
@@ -246,7 +298,6 @@ def td3(env_fn: Callable,
         # Bellman backup for Q functions
         with torch.no_grad():
             pi_targ = ac_targ.pi(o2)
-
             # Target policy smoothing
             epsilon = torch.randn_like(pi_targ) * target_noise
             epsilon = torch.clamp(epsilon, -noise_clip, noise_clip)
@@ -275,13 +326,6 @@ def td3(env_fn: Callable,
         o = data['obs']
         q1_pi = ac.q1(o, ac.pi(o))
         return -q1_pi.mean()
-
-    # Set up optimizers for policy and q-function
-    pi_optimizer = Adam(ac.pi.parameters(), lr=pi_learning_rate_fn(0))
-    q_optimizer = Adam(q_params, lr=q_learning_rate_fn(0))
-
-    # Set up model saving
-    logger.setup_pytorch_saver(ac)
 
     def update(data, timer):
         # First run one gradient descent step for Q1 and Q2
@@ -333,8 +377,7 @@ def td3(env_fn: Callable,
             while not (d or (ep_len == max_ep_len)):
                 # Take deterministic actions at test time (noise_scale=0)
                 scaled_action = get_action(o, 0)
-                a = unscale_action(env.action_space, scaled_action)
-                o, r, d, _ = test_env.step(a)
+                o, r, d, _ = test_env.step(unscale_action(env.action_space, scaled_action))
                 ep_ret += r
                 ep_len += 1
             logger.store(TestEpRet=ep_ret, TestEpLen=ep_len)
@@ -342,9 +385,16 @@ def td3(env_fn: Callable,
     # Prepare for interaction with environment
     total_steps = steps_per_epoch * epochs
     start_time = time.time()
-    o, ep_ret, ep_len = env.reset(), 0, 0
+    if loaded_state_dict is not None:
+        o = loaded_state_dict['o']
+        ep_ret = loaded_state_dict['ep_ret']
+        ep_len = loaded_state_dict['ep_len']
+    else:
+        o, ep_ret, ep_len = env.reset(), 0, 0
     # Main loop: collect experience in env and update/log each epoch
     for t in range(total_steps):
+        t += t_ori
+        # printMemUsage(f"start of step {t}")
         # Until start_steps have elapsed, randomly sample actions
         # from a uniform distribution for better exploration. Afterwards, 
         # use the learned policy (with some noise, via act_noise).
@@ -388,9 +438,6 @@ def td3(env_fn: Callable,
             update_learning_rate(q_optimizer, q_learning_rate_fn(t))
             update_learning_rate(pi_optimizer, pi_learning_rate_fn(t))
             epoch = (t + 1) // steps_per_epoch
-            # Save model
-            if (epoch % save_freq == 0) or (epoch == epochs):
-                logger.save_state({}, None)
 
             # Test the performance of the deterministic version of the agent.
             test_agent()
@@ -398,9 +445,9 @@ def td3(env_fn: Callable,
             # Log info about epoch
             logger.log_tabular('Epoch', epoch)
             logger.log_tabular('EpRet', with_min_and_max=True)
-            logger.log_tabular('TestEpRet', with_min_and_max=True)
+            # logger.log_tabular('TestEpRet', with_min_and_max=True)
             logger.log_tabular('EpLen', average_only=True)
-            logger.log_tabular('TestEpLen', average_only=True)
+            # logger.log_tabular('TestEpLen', average_only=True)
             logger.log_tabular('TotalEnvInteracts', t)
             logger.log_tabular('Q1Vals', with_min_and_max=True)
             logger.log_tabular('Q2Vals', with_min_and_max=True)
@@ -408,6 +455,29 @@ def td3(env_fn: Callable,
             logger.log_tabular('LossQ', average_only=True)
             logger.log_tabular('Time', time.time() - start_time)
             logger.dump_tabular()
+
+            # Save model
+            if ((epoch % save_freq == 0) or (epoch == epochs)) and save_model_path is not None:
+                save_file_path = os.path.join(save_model_path, f'save_{epoch}.pt')
+                torch.save({'ac': ac.state_dict(),
+                            'ac_targ': ac_targ.state_dict(),
+                            'replay_buffer': replay_buffer,
+                            'pi_optimizer': pi_optimizer.state_dict(),
+                            'q_optimizer': q_optimizer.state_dict(),
+                            'logger_epoch_dict': logger.epoch_dict,
+                            'q_learning_rate_fn': q_learning_rate_fn,
+                            'pi_learning_rate_fn': pi_learning_rate_fn,
+                            'epsilon_fn': epsilon_fn,
+                            'act_noise_fn': act_noise_fn,
+                            'torch_rng_state': torch.get_rng_state(),
+                            'np_rng_state': np.random.get_state(),
+                            'action_space_state': env.action_space.np_random.get_state(),
+                            'env': env,
+                            'test_env': test_env,
+                            'ep_ret': ep_ret,
+                            'ep_len': ep_len,
+                            'o': o,
+                            't': t+1}, save_file_path)
 
 
 if __name__ == '__main__':
