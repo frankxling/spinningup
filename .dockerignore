@@ -1,5 +1,3 @@
 *.egg-info
 .idea
 .git
-run_scripts
-Dockerfile
