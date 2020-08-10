@@ -41,7 +41,16 @@ def load_latest_state_dict(path: str):
     state_dict = torch.load(latest_save_file)
     return state_dict
 
-
+def delete_old_files(path: str, max_num_files: int = 10):
+    assert max_num_files > 0, "Maximum number of checkpoint files should be a positive number"
+    files_path = os.path.join(path, '*.pt')
+    list_of_files = glob.glob(files_path)
+    if len(list_of_files) > max_num_files:
+        num_files_to_remove = len(list_of_files) - max_num_files
+        for _ in range(num_files_to_remove):
+            oldest_save_file = min(list_of_files, key=os.path.getctime)
+            print(f"Deleting {oldest_save_file}")
+            os.remove(oldest_save_file)
 
 class ReplayBuffer:
     """
@@ -99,8 +108,9 @@ def td3(env_fn: Callable,
         logger_kwargs: Dict = None,
         save_freq: int = 1,
         random_exploration: Union[Callable, float] = 0.0,
-        save_model_path: str = None,
-        load_model_path: str = None):
+        save_checkpoint_path: str = None,
+        load_checkpoint_path: str = None,
+        load_model_file: str = None):
     """
     Twin Delayed Deep Deterministic Policy Gradient (TD3)
 
@@ -200,18 +210,32 @@ def td3(env_fn: Callable,
         random_exploration (float or callable): Probability to randomly select
             an action instead of selecting from policy.
 
-    """
+        save_checkpoint_path (str): Path to save the model. If not set, no model
+            will be saved
 
+        load_checkpoint_path (str): Path to load the model. Cannot be set if
+            save_model_path is set.
+    """
     if logger_kwargs is None:
         logger_kwargs = dict()
     if ac_kwargs is None:
         ac_kwargs = dict()
-    # Initialisation
+
+    if save_checkpoint_path is not None:
+        assert load_checkpoint_path is None, "load_model_path cannot be set when save_model_path is already set"
+        if not os.path.exists(save_checkpoint_path):
+            print(f"Folder {save_checkpoint_path} does not exist, creating...")
+            os.makedirs(save_checkpoint_path)
+
+    if load_checkpoint_path is not None:
+        assert load_model_file is None, "load_checkpoint_path cannot be set when load_model_file is already set"
+    # ------------ Initialisation begin ------------
     loaded_state_dict = None
-    if load_model_path is not None:
+    if load_checkpoint_path is not None:
         logger = EpochLogger(**logger_kwargs)
         logger.save_config(locals())
-        loaded_state_dict = load_latest_state_dict(load_model_path)
+        loaded_state_dict = load_latest_state_dict(load_checkpoint_path)
+
         logger.epoch_dict = loaded_state_dict['logger_epoch_dict']
         q_learning_rate_fn = loaded_state_dict['q_learning_rate_fn']
         pi_learning_rate_fn = loaded_state_dict['pi_learning_rate_fn']
@@ -262,7 +286,11 @@ def td3(env_fn: Callable,
 
 
         # Create actor-critic module and target networks
-        ac = actor_critic(env.observation_space, env.action_space, **ac_kwargs)
+        if load_model_file is not None:
+            assert os.path.exists(load_model_file), f"Model file path does not exist: {load_model_file}"
+            ac = torch.load(load_model_file)
+        else:
+            ac = actor_critic(env.observation_space, env.action_space, **ac_kwargs)
         ac_targ = deepcopy(ac)
 
         # List of parameters for both Q-networks (save this for convenience)
@@ -275,6 +303,7 @@ def td3(env_fn: Callable,
 
     act_limit = 1.0
 
+    # ------------ Initialisation end ------------
 
     # Freeze target networks with respect to optimizers (only update via polyak averaging)
     for p in ac_targ.parameters():
@@ -326,6 +355,9 @@ def td3(env_fn: Callable,
         o = data['obs']
         q1_pi = ac.q1(o, ac.pi(o))
         return -q1_pi.mean()
+
+    # Set up model saving
+    logger.setup_pytorch_saver(ac)
 
     def update(data, timer):
         # First run one gradient descent step for Q1 and Q2
@@ -445,9 +477,9 @@ def td3(env_fn: Callable,
             # Log info about epoch
             logger.log_tabular('Epoch', epoch)
             logger.log_tabular('EpRet', with_min_and_max=True)
-            # logger.log_tabular('TestEpRet', with_min_and_max=True)
+            logger.log_tabular('TestEpRet', with_min_and_max=True)
             logger.log_tabular('EpLen', average_only=True)
-            # logger.log_tabular('TestEpLen', average_only=True)
+            logger.log_tabular('TestEpLen', average_only=True)
             logger.log_tabular('TotalEnvInteracts', t)
             logger.log_tabular('Q1Vals', with_min_and_max=True)
             logger.log_tabular('Q2Vals', with_min_and_max=True)
@@ -456,29 +488,41 @@ def td3(env_fn: Callable,
             logger.log_tabular('Time', time.time() - start_time)
             logger.dump_tabular()
 
-            # Save model
-            if ((epoch % save_freq == 0) or (epoch == epochs)) and save_model_path is not None:
-                save_file_path = os.path.join(save_model_path, f'save_{epoch}.pt')
-                torch.save({'ac': ac.state_dict(),
-                            'ac_targ': ac_targ.state_dict(),
-                            'replay_buffer': replay_buffer,
-                            'pi_optimizer': pi_optimizer.state_dict(),
-                            'q_optimizer': q_optimizer.state_dict(),
-                            'logger_epoch_dict': logger.epoch_dict,
-                            'q_learning_rate_fn': q_learning_rate_fn,
-                            'pi_learning_rate_fn': pi_learning_rate_fn,
-                            'epsilon_fn': epsilon_fn,
-                            'act_noise_fn': act_noise_fn,
-                            'torch_rng_state': torch.get_rng_state(),
-                            'np_rng_state': np.random.get_state(),
-                            'action_space_state': env.action_space.np_random.get_state(),
-                            'env': env,
-                            'test_env': test_env,
-                            'ep_ret': ep_ret,
-                            'ep_len': ep_len,
-                            'o': o,
-                            't': t+1}, save_file_path)
+            # Save model and checkpoint
+            save_checkpoint = False
+            checkpoint_path = ""
+            if save_checkpoint_path is not None:
+                save_checkpoint = True
+                checkpoint_path = save_checkpoint_path
+            if load_checkpoint_path is not None:
+                save_checkpoint = True
+                checkpoint_path = load_checkpoint_path
+            if (epoch % save_freq == 0) or (epoch == epochs):
+                logger.save_state({}, None)
+
+                if save_checkpoint:
+                    checkpoint_file = os.path.join(checkpoint_path, f'save_{epoch}.pt')
+                    torch.save({'ac': ac.state_dict(),
+                                'ac_targ': ac_targ.state_dict(),
+                                'replay_buffer': replay_buffer,
+                                'pi_optimizer': pi_optimizer.state_dict(),
+                                'q_optimizer': q_optimizer.state_dict(),
+                                'logger_epoch_dict': logger.epoch_dict,
+                                'q_learning_rate_fn': q_learning_rate_fn,
+                                'pi_learning_rate_fn': pi_learning_rate_fn,
+                                'epsilon_fn': epsilon_fn,
+                                'act_noise_fn': act_noise_fn,
+                                'torch_rng_state': torch.get_rng_state(),
+                                'np_rng_state': np.random.get_state(),
+                                'action_space_state': env.action_space.np_random.get_state(),
+                                'env': env,
+                                'test_env': test_env,
+                                'ep_ret': ep_ret,
+                                'ep_len': ep_len,
+                                'o': o,
+                                't': t+1}, checkpoint_file)
+                    delete_old_files(checkpoint_path, 10)
 
 
 if __name__ == '__main__':
-    raise NotImplementedError("This file is not supposed to be ran, please use another script to run this file")
+    raise RuntimeError("This file is not supposed to be ran, please use another script to run this file")
