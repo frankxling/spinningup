@@ -404,6 +404,7 @@ def td3(env_fn: Callable,
         return np.clip(a, -act_limit, act_limit)
 
     def test_agent():
+        sum = 0
         for _ in range(num_test_episodes):
             o, d, ep_ret, ep_len = test_env.reset(), False, 0, 0
             while not (d or (ep_len == max_ep_len)):
@@ -413,14 +414,19 @@ def td3(env_fn: Callable,
                 ep_ret += r
                 ep_len += 1
             logger.store(TestEpRet=ep_ret, TestEpLen=ep_len)
+            sum += ep_ret
+        test_average = sum / num_test_episodes
+        return test_average
 
     # Prepare for interaction with environment
     total_steps = steps_per_epoch * epochs
     start_time = time.time()
+    highest_test_reward = 0
     if loaded_state_dict is not None:
         o = loaded_state_dict['o']
         ep_ret = loaded_state_dict['ep_ret']
         ep_len = loaded_state_dict['ep_len']
+        highest_test_reward = loaded_state_dict['highest_test_reward']
     else:
         o, ep_ret, ep_len = env.reset(), 0, 0
     # Main loop: collect experience in env and update/log each epoch
@@ -472,7 +478,7 @@ def td3(env_fn: Callable,
             epoch = (t + 1) // steps_per_epoch
 
             # Test the performance of the deterministic version of the agent.
-            test_agent()
+            average_test = test_agent()
 
             # Log info about epoch
             logger.log_tabular('Epoch', epoch)
@@ -498,7 +504,10 @@ def td3(env_fn: Callable,
                 save_checkpoint = True
                 checkpoint_path = load_checkpoint_path
             if (epoch % save_freq == 0) or (epoch == epochs):
-                logger.save_state({}, None)
+                if average_test > highest_test_reward:
+                    logger.save_state({}, None)
+                    print('Saved highest reward model!')
+                    highest_test_reward = average_test
 
                 if save_checkpoint:
                     checkpoint_file = os.path.join(checkpoint_path, f'save_{epoch}.pt')
@@ -520,6 +529,7 @@ def td3(env_fn: Callable,
                                 'ep_ret': ep_ret,
                                 'ep_len': ep_len,
                                 'o': o,
+                                'highest_test_reward': highest_test_reward,
                                 't': t+1}, checkpoint_file)
                     delete_old_files(checkpoint_path, 10)
 
