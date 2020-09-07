@@ -116,6 +116,17 @@ def run_policy(env, get_action, max_ep_len=None, num_episodes=100, render=True):
         "and we can't run the agent in it. :( \n\n Check out the readthedocs " + \
         "page on Experiment Outputs for how to handle this situation."
 
+    def unscale_action(action_space, scaled_action):
+        """
+        Rescale the action from [-1, 1] to [low, high]
+        (no need for symmetric action space)
+        :param action_space: (gym.spaces.box.Box)
+        :param scaled_action: (np.ndarray)
+        :return: (np.ndarray)
+        """
+        low, high = action_space.low, action_space.high
+        return low + (0.5 * (scaled_action + 1.0) * (high - low))
+
     logger = EpochLogger()
     o, r, d, ep_ret, ep_len, n = env.reset(), 0, False, 0, 0, 0
     while n < num_episodes:
@@ -124,7 +135,9 @@ def run_policy(env, get_action, max_ep_len=None, num_episodes=100, render=True):
             time.sleep(1e-3)
 
         a = get_action(o)
-        o, r, d, _ = env.step(a)
+        unscaled_action = unscale_action(env.action_space, a)
+        o, r, d, _ = env.step(unscaled_action)
+        #time.sleep(0.1)
         ep_ret += r
         ep_len += 1
 
