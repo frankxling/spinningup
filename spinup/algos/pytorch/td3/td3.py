@@ -506,7 +506,6 @@ def td3(env_fn: Callable,
             if (epoch % save_freq == 0) or (epoch == epochs):
                 if average_test > highest_test_reward:
                     logger.save_state({}, None)
-                    print('Saved highest reward model!')
                     highest_test_reward = average_test
 
                 if save_checkpoint:

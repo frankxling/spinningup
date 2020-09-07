@@ -15,10 +15,8 @@ setup(
     version=__version__,#'0.1',
     install_requires=[
         'cloudpickle==1.2.1',
-        'gym[atari,box2d,classic_control]~=0.15.3',
         'ipython',
         'joblib',
-        'matplotlib==3.1.1',
         'mpi4py',
         'numpy',
         'pandas',
@@ -26,7 +24,7 @@ setup(
         'psutil',
         'scipy',
         'seaborn==0.8.1',
-        'torch==1.3.1',
+        'torch==1.5.1',
         'tqdm'
     ],
     description="Teaching tools for introducing people to deep RL.",
