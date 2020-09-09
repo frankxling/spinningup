@@ -6,7 +6,7 @@ Logs to a tab-separated-values file (path/to/output_directory/progress.txt)
 
 """
 import json
-import joblib
+# import joblib
 import shutil
 import numpy as np
 # import tensorflow as tf
@@ -181,11 +181,11 @@ class Logger:
             itr: An int, or None. Current iteration of training.
         """
         if proc_id()==0:
-            fname = 'vars.pkl' if itr is None else 'vars%d.pkl'%itr
-            try:
-                joblib.dump(state_dict, osp.join(self.output_dir, fname))
-            except:
-                self.log('Warning: could not pickle state_dict.', color='red')
+            # fname = 'vars.pkl' if itr is None else 'vars%d.pkl'%itr
+            # try:
+            #     joblib.dump(state_dict, osp.join(self.output_dir, fname))
+            # except:
+            #     self.log('Warning: could not pickle state_dict.', color='red')
             if hasattr(self, 'tf_saver_elements'):
                 self._tf_simple_save(itr)
             if hasattr(self, 'pytorch_saver_elements'):

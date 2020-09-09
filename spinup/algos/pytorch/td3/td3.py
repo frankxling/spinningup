@@ -12,6 +12,7 @@ from spinup.utils.logx import EpochLogger
 from spinup.utils.torch_algo_utils import update_learning_rate, get_schedule_fn
 import glob
 
+
 def scale_action(action_space, action):
     """
     Rescale the action from [low, high] to [-1, 1]
@@ -22,6 +23,7 @@ def scale_action(action_space, action):
     """
     low, high = action_space.low, action_space.high
     return 2.0 * ((action - low) / (high - low)) - 1.0
+
 
 def unscale_action(action_space, scaled_action):
     """
@@ -34,12 +36,15 @@ def unscale_action(action_space, scaled_action):
     low, high = action_space.low, action_space.high
     return low + (0.5 * (scaled_action + 1.0) * (high - low))
 
+
 def load_latest_state_dict(path: str):
     files_path = os.path.join(path, '*.pt')
     list_of_files = glob.glob(files_path)
+    assert len(list_of_files) > 0, f"No files matching path of {files_path}"
     latest_save_file = max(list_of_files, key=os.path.getctime)
     state_dict = torch.load(latest_save_file)
     return state_dict
+
 
 def delete_old_files(path: str, max_num_files: int = 10):
     assert max_num_files > 0, "Maximum number of checkpoint files should be a positive number"
@@ -51,6 +56,7 @@ def delete_old_files(path: str, max_num_files: int = 10):
             oldest_save_file = min(list_of_files, key=os.path.getctime)
             print(f"Deleting {oldest_save_file}")
             os.remove(oldest_save_file)
+
 
 class ReplayBuffer:
     """
@@ -110,7 +116,8 @@ def td3(env_fn: Callable,
         random_exploration: Union[Callable, float] = 0.0,
         save_checkpoint_path: str = None,
         load_checkpoint_path: str = None,
-        load_model_file: str = None):
+        load_model_file: str = None,
+        max_saved_checkpoints: int = 10):
     """
     Twin Delayed Deep Deterministic Policy Gradient (TD3)
 
@@ -210,11 +217,17 @@ def td3(env_fn: Callable,
         random_exploration (float or callable): Probability to randomly select
             an action instead of selecting from policy.
 
-        save_checkpoint_path (str): Path to save the model. If not set, no model
+        save_checkpoint_path (str): Path to save the checkpoint. If not set, no checkpoint
             will be saved
 
-        load_checkpoint_path (str): Path to load the model. Cannot be set if
-            save_model_path is set.
+        load_checkpoint_path (str): Path to load the checkpoint. Cannot be set if
+            save_checkpoint_path is set.
+
+        load_model_file (str): Path to load a specific model. Not to be confused with checkpoint.
+         Cannot be set if load_checkpoint_path is set, but can be set if save_checkpoint_path is set.
+
+        max_saved_checkpoints (int): Maximum number of saved checkpoints to keep. When number of
+         checkpoints reach this number, oldest checkpoints will be deleted first.
     """
     if logger_kwargs is None:
         logger_kwargs = dict()
@@ -530,7 +543,7 @@ def td3(env_fn: Callable,
                                 'o': o,
                                 'highest_test_reward': highest_test_reward,
                                 't': t+1}, checkpoint_file)
-                    delete_old_files(checkpoint_path, 10)
+                    delete_old_files(checkpoint_path, max_saved_checkpoints)
 
 
 if __name__ == '__main__':

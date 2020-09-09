@@ -14,16 +14,10 @@ setup(
     py_modules=['spinup'],
     version=__version__,#'0.1',
     install_requires=[
-        'cloudpickle==1.2.1',
-        'ipython',
-        'joblib',
         'mpi4py',
         'numpy',
         'pandas',
-        'pytest',
         'psutil',
-        'scipy',
-        'seaborn==0.8.1',
         'torch==1.5.1',
         'tqdm'
     ],
