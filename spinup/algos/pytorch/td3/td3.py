@@ -249,6 +249,7 @@ def td3(env_fn: Callable,
         logger.save_config(locals())
         loaded_state_dict = load_latest_state_dict(load_checkpoint_path)
 
+        previous_total_time = loaded_state_dict['previous_total_time']
         logger.epoch_dict = loaded_state_dict['logger_epoch_dict']
         q_learning_rate_fn = loaded_state_dict['q_learning_rate_fn']
         pi_learning_rate_fn = loaded_state_dict['pi_learning_rate_fn']
@@ -277,6 +278,7 @@ def td3(env_fn: Callable,
     else:
         logger = EpochLogger(**logger_kwargs)
         logger.save_config(locals())
+        previous_total_time = 0
 
         torch.manual_seed(seed)
         np.random.seed(seed)
@@ -493,6 +495,8 @@ def td3(env_fn: Callable,
             # Test the performance of the deterministic version of the agent.
             average_test = test_agent()
 
+            time_elapsed = time.time() - start_time
+            total_time = time_elapsed + previous_total_time
             # Log info about epoch
             logger.log_tabular('Epoch', epoch)
             logger.log_tabular('EpRet', with_min_and_max=True)
@@ -504,7 +508,8 @@ def td3(env_fn: Callable,
             logger.log_tabular('Q2Vals', with_min_and_max=True)
             logger.log_tabular('LossPi', average_only=True)
             logger.log_tabular('LossQ', average_only=True)
-            logger.log_tabular('Time', time.time() - start_time)
+            logger.log_tabular('Time', time_elapsed)
+            logger.log_tabular('Total Time', total_time)
             logger.dump_tabular()
 
             # Save model and checkpoint
@@ -542,6 +547,7 @@ def td3(env_fn: Callable,
                                 'ep_len': ep_len,
                                 'o': o,
                                 'highest_test_reward': highest_test_reward,
+                                'previous_total_time': total_time,
                                 't': t+1}, checkpoint_file)
                     delete_old_files(checkpoint_path, max_saved_checkpoints)
 
