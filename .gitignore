@@ -8,3 +8,13 @@ data/
 .vscode/
 .DS_Store
 _build/
+test_hyq.py
+runningscriptrosarm.py
+runningscriptigniarm.py
+runningscriptHYQtest.py
+runningscriptHYQtest2.py
+runningscriptHYQ.py
+plotSQL.py
+plothyq.py
+*.db
+test_policy.py
