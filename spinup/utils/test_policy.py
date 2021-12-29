@@ -103,7 +103,7 @@ def load_pytorch_policy(fpath, itr, deterministic=False):
     # make function for producing an action given a single state
     def get_action(x):
         with torch.no_grad():
-            x = torch.as_tensor(x, dtype=torch.float32)
+            x = torch.as_tensor(x, dtype=torch.float32) #sdas
             action = model.act(x)
         return action
 
@@ -125,6 +125,7 @@ def run_policy(env, get_action, max_ep_len=None, num_episodes=100, render=True):
         :return: (np.ndarray)
         """
         low, high = action_space.low, action_space.high
+        scaled_action=scaled_action.cpu().numpy()
         return low + (0.5 * (scaled_action + 1.0) * (high - low))
 
     logger = EpochLogger()
@@ -145,8 +146,11 @@ def run_policy(env, get_action, max_ep_len=None, num_episodes=100, render=True):
         if d or (ep_len == max_ep_len):
             logger.store(EpRet=ep_ret, EpLen=ep_len)
             print('Episode %d \t EpRet %.3f \t EpLen %d' % (n, ep_ret, ep_len))
-            o, r, d, ep_ret, ep_len = env.reset(), 0, False, 0, 0
-            n += 1
+            if isinstance(env.unwrapped._CheeBalanceEnv__robot.SetVelocity,tuple): 
+                env.unwrapped._CheeBalanceEnv__robot.reset()
+            o, r, d, ep_ret, ep_len = env.reset(), 0, False, 0, 0  #TODO Turn off for continously see where it go     .reset(), 0, False, 0, 0 
+            #d, ep_ret, ep_len = False, 0, 0
+            n += 1 
 
     logger.log_tabular('EpRet', with_min_and_max=True)
     logger.log_tabular('EpLen', average_only=True)
