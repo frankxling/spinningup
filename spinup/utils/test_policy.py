@@ -135,10 +135,10 @@ def run_policy(env, get_action, max_ep_len=None, num_episodes=100, render=True):
             env.render()
             time.sleep(1e-3)
         #q_lr =0 #extra
-        #explo =0  #extra
+        explo =0  #extra
         a = get_action(o)
         unscaled_action = unscale_action(env.action_space, a)
-        o, r, d, _ = env.step(unscaled_action) #,q_lr,explo
+        o, r, d, _ = env.step(unscaled_action, explo) #,q_lr,explo
         #time.sleep(0.1)
         ep_ret += r
         ep_len += 1
