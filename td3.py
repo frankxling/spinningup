@@ -5,13 +5,13 @@ import itertools
 import numpy as np
 import torch
 from torch.optim import Adam
+from torch.optim import SGD
 from typing import Dict, Union, Callable
 import time
 import spinup.algos.pytorch.td3.core as core
 from spinup.utils.logx import EpochLogger
 from spinup.utils.torch_algo_utils import update_learning_rate, get_schedule_fn
 import glob
-
 
 def scale_action(action_space, action):
     """
@@ -24,7 +24,6 @@ def scale_action(action_space, action):
     low, high = action_space.low, action_space.high
     return 2.0 * ((action - low) / (high - low)) - 1.0
 
-
 def unscale_action(action_space, scaled_action):
     """
     Rescale the action from [-1, 1] to [low, high]
@@ -36,15 +35,20 @@ def unscale_action(action_space, scaled_action):
     low, high = action_space.low, action_space.high
     return low + (0.5 * (scaled_action + 1.0) * (high - low))
 
+def scale_obs(obs_space, obs):
+    low, high = obs_space.low, obs_space.high
+    return 2.0 * ((obs - low) / (high - low)) - 1.0
+
+def unscale_obs(obs_space, scaled_obs):
+    low, high = obs_space.low, obs_space.high
+    return low + (0.5 * (scaled_obs + 1.0) * (high - low))
 
 def load_latest_state_dict(path: str):
     files_path = os.path.join(path, '*.pt')
     list_of_files = glob.glob(files_path)
-    assert len(list_of_files) > 0, f"No files matching path of {files_path}"
     latest_save_file = max(list_of_files, key=os.path.getctime)
     state_dict = torch.load(latest_save_file)
     return state_dict
-
 
 def delete_old_files(path: str, max_num_files: int = 10):
     assert max_num_files > 0, "Maximum number of checkpoint files should be a positive number"
@@ -56,7 +60,6 @@ def delete_old_files(path: str, max_num_files: int = 10):
             oldest_save_file = min(list_of_files, key=os.path.getctime)
             print(f"Deleting {oldest_save_file}")
             os.remove(oldest_save_file)
-
 
 class ReplayBuffer:
     """
@@ -86,8 +89,9 @@ class ReplayBuffer:
                      obs2=self.obs2_buf[idxs],
                      act=self.act_buf[idxs],
                      rew=self.rew_buf[idxs],
-                     done=self.done_buf[idxs])
-        return {k: torch.as_tensor(v, dtype=torch.float32) for k, v in batch.items()}
+                     done=self.done_buf[idxs]) 
+        return {k: torch.as_tensor(v, dtype=torch.float32) for k, v in batch.items()}#torch.as_tensor([0,0,0], device=torch.device('cuda')
+
 
 
 def td3(env_fn: Callable,
@@ -109,15 +113,14 @@ def td3(env_fn: Callable,
         target_noise: float = 0.2,
         noise_clip: float = 0.5,
         policy_delay: int = 2,
-        num_test_episodes: int = 3,
+        num_test_episodes: int = 1,
         max_ep_len: int = 1000,
         logger_kwargs: Dict = None,
         save_freq: int = 1,
         random_exploration: Union[Callable, float] = 0.0,
         save_checkpoint_path: str = None,
         load_checkpoint_path: str = None,
-        load_model_file: str = None,
-        max_saved_checkpoints: int = 10):
+        load_model_file: str = None):
     """
     Twin Delayed Deep Deterministic Policy Gradient (TD3)
 
@@ -217,17 +220,11 @@ def td3(env_fn: Callable,
         random_exploration (float or callable): Probability to randomly select
             an action instead of selecting from policy.
 
-        save_checkpoint_path (str): Path to save the checkpoint. If not set, no checkpoint
+        save_checkpoint_path (str): Path to save the model. If not set, no model
             will be saved
 
-        load_checkpoint_path (str): Path to load the checkpoint. Cannot be set if
-            save_checkpoint_path is set.
-
-        load_model_file (str): Path to load a specific model. Not to be confused with checkpoint.
-         Cannot be set if load_checkpoint_path is set, but can be set if save_checkpoint_path is set.
-
-        max_saved_checkpoints (int): Maximum number of saved checkpoints to keep. When number of
-         checkpoints reach this number, oldest checkpoints will be deleted first.
+        load_checkpoint_path (str): Path to load the model. Cannot be set if
+            save_model_path is set.
     """
     if logger_kwargs is None:
         logger_kwargs = dict()
@@ -249,19 +246,21 @@ def td3(env_fn: Callable,
         logger.save_config(locals())
         loaded_state_dict = load_latest_state_dict(load_checkpoint_path)
 
-        previous_total_time = loaded_state_dict['previous_total_time']
         logger.epoch_dict = loaded_state_dict['logger_epoch_dict']
         q_learning_rate_fn = loaded_state_dict['q_learning_rate_fn']
         pi_learning_rate_fn = loaded_state_dict['pi_learning_rate_fn']
         epsilon_fn = loaded_state_dict['epsilon_fn']
         act_noise_fn = loaded_state_dict['act_noise_fn']
         replay_buffer = loaded_state_dict['replay_buffer']
-        env, test_env = loaded_state_dict['env'], loaded_state_dict['test_env']
+        #env, test_env = loaded_state_dict['env'], loaded_state_dict['test_env']
+        # Assume that env_fn will return existing env object instead of creating new
+        env, test_env = env_fn(), env_fn()
+        env.reset() #, test_env.reset()
         ac = actor_critic(env.observation_space, env.action_space, **ac_kwargs)
-        ac_targ = deepcopy(ac)
+        ac_targ = deepcopy(ac)  #deepcopy, to confirm whether the tensor and bias is the same result 
         ac.load_state_dict(loaded_state_dict['ac'])
         ac_targ.load_state_dict(loaded_state_dict['ac_targ'])
-        obs_dim = env.observation_space.shape
+        obs_dim = env.observation_space.shape[0]
         act_dim = env.action_space.shape[0]
         env.action_space.np_random.set_state(loaded_state_dict['action_space_state'])
 
@@ -278,7 +277,6 @@ def td3(env_fn: Callable,
     else:
         logger = EpochLogger(**logger_kwargs)
         logger.save_config(locals())
-        previous_total_time = 0
 
         torch.manual_seed(seed)
         np.random.seed(seed)
@@ -291,7 +289,7 @@ def td3(env_fn: Callable,
         epsilon_fn = get_schedule_fn(random_exploration)
 
         env, test_env = env_fn(), env_fn()
-        obs_dim = env.observation_space.shape
+        obs_dim = env.observation_space.shape[0]
         act_dim = env.action_space.shape[0]
 
         env.action_space.seed(seed)
@@ -314,6 +312,9 @@ def td3(env_fn: Callable,
         # Set up optimizers for policy and q-function
         pi_optimizer = Adam(ac.pi.parameters(), lr=pi_learning_rate_fn(0))
         q_optimizer = Adam(q_params, lr=q_learning_rate_fn(0))
+
+        #pi_optimizer = SGD(ac.pi.parameters(), lr=pi_learning_rate_fn(0))
+        #q_optimizer = SGD(q_params, lr=q_learning_rate_fn(0))
         t_ori = 0
 
     act_limit = 1.0
@@ -330,7 +331,8 @@ def td3(env_fn: Callable,
     var_counts = tuple(core.count_vars(module) for module in [ac.pi, ac.q1, ac.q2])
     logger.log('\nNumber of parameters: \t pi: %d, \t q1: %d, \t q2: %d\n' % var_counts)
 
-    torch.set_printoptions(profile="default")
+    #torch.set_printoptions(profile="default")
+    torch.set_printoptions(precision=10,linewidth=100, edgeitems=20,threshold=100)
 
     # Set up function for computing TD3 Q-losses
     def compute_loss_q(data):
@@ -347,13 +349,24 @@ def td3(env_fn: Callable,
             epsilon = torch.clamp(epsilon, -noise_clip, noise_clip)
             a2 = pi_targ + epsilon
             a2 = torch.clamp(a2, -act_limit, act_limit)
-
+            o2_action= torch.ones(a2.size())
+            for i in range (a2.size()[0]):
+                if int(o2[i][24].tolist())== -1:
+                    a[3],a[7],a[11]=torch.tensor([0,0,0])
+                    o2_action[i][0],o2_action[i][4],o2_action[i][8]=torch.tensor([0,0,0])
+                if int(o2[i][25].tolist())== -1:
+                    o2_action[i][1],o2_action[i][5],o2_action[i][9]=torch.tensor([0,0,0])
+                if int(o2[i][26].tolist())== -1:
+                    o2_action[i][2],o2_action[i][6],o2_action[i][10]=torch.tensor([0,0,0])
+                if int(o2[i][27].tolist())== -1:
+                    o2_action[i][3],o2_action[i][7],o2_action[i][11]=torch.tensor([0,0,0])
+            a2 = a2 *o2_action
             # Target Q-values
-            q1_pi_targ = ac_targ.q1(o2, a2)
-            q2_pi_targ = ac_targ.q2(o2, a2)
-            q_pi_targ = torch.min(q1_pi_targ, q2_pi_targ)
-            backup = r + gamma * (1 - d) * q_pi_targ
-
+            q1_pi_targ = ac_targ.q1(o2, a2)  #criticize o2 and a2. whether during o2 , do a2 okay or not. 
+            q2_pi_targ = ac_targ.q2(o2, a2)   #criticize o2 and a2. whether during o2 , do a2 okay or not. 
+            q_pi_targ = torch.min(q1_pi_targ, q2_pi_targ)   #choose the minimal from all the tensor
+            backup = r + gamma * (1 - d) * q_pi_targ #reward Q table 
+            #torch.set_printoptions(profile='full')#precision=2,linewidth=80, edgeitems=3,threshold=60000)
         # MSE loss against Bellman backup
         loss_q1 = ((q1 - backup) ** 2).mean()
         loss_q2 = ((q2 - backup) ** 2).mean()
@@ -380,7 +393,6 @@ def td3(env_fn: Callable,
         loss_q, loss_info = compute_loss_q(data)
         loss_q.backward()
         q_optimizer.step()
-
         # Record things
         logger.store(LossQ=loss_q.item(), **loss_info)
 
@@ -395,7 +407,29 @@ def td3(env_fn: Callable,
             # Next run one gradient descent step for pi.
             pi_optimizer.zero_grad()
             loss_pi = compute_loss_pi(data)
-            loss_pi.backward()
+
+
+            #for n, w in ac.pi.named_parameters(): 
+                #if n =='pi.0.weight':  
+                    #print(w[0],'w[0]\n', w[64],'w[64]\n',w[129],'w[129]\n',w[193],'w[193]\n')
+                    #print(w.grad,int(data['gaits'].tolist()),' w.grad[0] , gait \n')
+            
+
+
+
+            loss_pi.backward()  
+            
+            # for n, w in ac.pi.named_parameters(): 
+            #     if n =='pi.0.weight':  
+                
+            #         #print(w[0],'w[0]\n', w[64],'w[64]\n',w[129],'w[129]\n',w[193],'w[193]\n')
+            #         if int(data['gaits'].tolist()) == 2: #1001
+            #             w.grad[64:128] , w.grad[128:192]=0,0
+            #         elif int(data['gaits'].tolist()) == 3: #0110#len(w.grada)
+            #             w.grad[0:64], w.grad[192:256]=0,0
+                    #print(w.grad[0],int(data['gaits'].tolist()),' w.grad[0] , gait \n',w.grad[64],'w.grad[64]\n',w.grad[129],'w.grad[129]\n',w.grad[193],'w.grad[193]\n')
+            
+            
             pi_optimizer.step()
 
             # Unfreeze Q-networks so you can optimize it at next DDPG step.
@@ -415,17 +449,31 @@ def td3(env_fn: Callable,
 
     def get_action(o, noise_scale):
         a = ac.act(torch.as_tensor(o, dtype=torch.float32))
+        a = np.array(a.tolist())
         a += noise_scale * np.random.randn(act_dim)
         return np.clip(a, -act_limit, act_limit)
+
+    def observation_noise(o):
+        noise = 0.01 * np.random.randn(obs_dim)
+        noise[24:29] = [0, 0, 0, 0, 0]
+        o_n = o + noise
+        return o_n
 
     def test_agent():
         sum = 0
         for _ in range(num_test_episodes):
+            
             o, d, ep_ret, ep_len = test_env.reset(), False, 0, 0
+            #test_env.render()
             while not (d or (ep_len == max_ep_len)):
                 # Take deterministic actions at test time (noise_scale=0)
+                #scaled_obs = scale_obs(env.observation_space, o)
+                #scaled_o_noise = observation_noise(scaled_obs)
+                #o_noise = unscale_obs(env.observation_space, scaled_o_noise)
                 scaled_action = get_action(o, 0)
-                o, r, d, _ = test_env.step(unscale_action(env.action_space, scaled_action))
+                #a_o_noise = ac.act(torch.as_tensor(o_noise, dtype=torch.float32))
+                #test_env.task.get_obs_noise_action (scaled_action, a_o_noise)
+                o, r, d, _ = test_env.step(unscale_action(env.action_space, scaled_action),threshold3 )#,q_lr, explo
                 ep_ret += r
                 ep_len += 1
             logger.store(TestEpRet=ep_ret, TestEpLen=ep_len)
@@ -437,28 +485,89 @@ def td3(env_fn: Callable,
     total_steps = steps_per_epoch * epochs
     start_time = time.time()
     highest_test_reward = 0
+    threshold2 = 0.9
+    i22=0
     if loaded_state_dict is not None:
         o = loaded_state_dict['o']
         ep_ret = loaded_state_dict['ep_ret']
         ep_len = loaded_state_dict['ep_len']
+        threshold2 = loaded_state_dict['threshold2']
+        i22 = loaded_state_dict['i22']
         highest_test_reward = loaded_state_dict['highest_test_reward']
     else:
         o, ep_ret, ep_len = env.reset(), 0, 0
     # Main loop: collect experience in env and update/log each epoch
+    #env.render()
+    
     for t in range(total_steps):
         t += t_ori
         # printMemUsage(f"start of step {t}")
         # Until start_steps have elapsed, randomly sample actions
-        # from a uniform distribution for better exploration. Afterwards, 
-        # use the learned policy (with some noise, via act_noise).
+        # from a uniform distribution for better exploration. Afterwards, s
+        # use the larned policy (with some noise, via act_noise).
+        #explo= epsilon_fn(t)
         if t > start_steps and np.random.rand() > epsilon_fn(t):
             a = get_action(o, act_noise_fn(t))
             unscaled_action = unscale_action(env.action_space, a)
         else:
             unscaled_action = env.action_space.sample()
             a = scale_action(env.action_space, unscaled_action)
+            
+        threshold3=epsilon_fn(t)
+
+        #TODO last timestep 
+
+        # if t > 400000 and ep_len>900:
+        #     i22+=1
+        #     if i22 > 1000 and (i22 % 1000) < 5: 
+        #         if threshold2 <= 0.3:
+        #             threshold2 -= 0.01
+        #         else:
+        #             threshold2 -= 0.1 
+        #     if threshold2 < 0.01:
+        #         threshold2 = 0.01
+                
+        #     if np.random.rand() > threshold2:
+        #         a = get_action(o, act_noise_fn(i22))
+        #         unscaled_action = unscale_action(env.action_space, a)
+        #     else:
+        #         unscaled_action = env.action_space.sample()
+        #         a = scale_action(env.action_space, unscaled_action)
+
+        #     threshold3 = threshold2            
+        
+            
+            
+
+        if int(o[24])== -1:
+            unscaled_action[0],unscaled_action[4],unscaled_action[8]=0,0,0
+            a[0],a[4],a[8]=0,0,0
+        if int(o[25])== -1:
+            unscaled_action[1],unscaled_action[5],unscaled_action[9]=0,0,0
+            a[1],a[5],a[9]=0,0,0
+        if int(o[26])== -1:
+            unscaled_action[2],unscaled_action[6],unscaled_action[10]=0,0,0
+            a[2],a[6],a[10]=0,0,0
+        if int(o[27])== -1:
+            unscaled_action[3],unscaled_action[7],unscaled_action[11]=0,0,0
+            a[3],a[7],a[11]=0,0,0
+        
+        #scaled_obs = scale_obs(env.observation_space, o)
+        #print ("scaled_obs:")
+        #print(scaled_obs)
+        #scaled_o_noise = observation_noise(scaled_obs)
+        #print ("scaled_o_noise:")
+        #print(scaled_o_noise)
+        #o_noise = unscale_obs(env.observation_space, scaled_o_noise)
+        #print ("o:")
+        #print(o)
+        #print ("o_noise:")
+        #print(o_noise)
+        #a_real = ac.act(torch.as_tensor(o, dtype=torch.float32))
+        #a_o_noise = ac.act(torch.as_tensor(o_noise, dtype=torch.float32))
+        #env.task.get_obs_noise_action (a_real, a_o_noise)
         # Step the env
-        o2, r, d, _ = env.step(unscaled_action)
+        o2, r, d, _ = env.step(unscaled_action,threshold3)#,threshold2)
         ep_ret += r
         ep_len += 1
 
@@ -479,12 +588,18 @@ def td3(env_fn: Callable,
             logger.store(EpRet=ep_ret, EpLen=ep_len)
             o, ep_ret, ep_len = env.reset(), 0, 0
 
+        # Early stop if cum_reward lower than -500
+        elif ep_ret < -300:
+            logger.store(EpRet=ep_ret, EpLen=ep_len)
+            o, ep_ret, ep_len = env.reset(), 0, 0
+            
         # Update handling
-        if t >= update_after and t % update_every == 0:
-            for j in range(update_every):
-                batch = replay_buffer.sample_batch(batch_size)
-                update(data=batch, timer=j)
-
+        if t >= update_after and t % update_every == 0:  # each step, 1000 
+            for j in range(update_every): #during timestep, it will update with len(update_every)
+                batch = replay_buffer.sample_batch(batch_size)  #100 # 1, 150[]  2, 30[]  3, 50[]            
+                update(data=batch, timer=j) # 150 [1111]     50[1001]
+            #print('timestep during update',t)    
+            #print(batch['obs'].size(),batch['act'].size())
         # End of epoch handling
         if (t + 1) % steps_per_epoch == 0:
             # Perform LR decay
@@ -495,10 +610,10 @@ def td3(env_fn: Callable,
             # Test the performance of the deterministic version of the agent.
             average_test = test_agent()
 
-            time_elapsed = time.time() - start_time
-            total_time = time_elapsed + previous_total_time
             # Log info about epoch
             logger.log_tabular('Epoch', epoch)
+            logger.log_tabular('last threshold', threshold2)
+            logger.log_tabular('i22', i22)
             logger.log_tabular('EpRet', with_min_and_max=True)
             logger.log_tabular('TestEpRet', with_min_and_max=True)
             logger.log_tabular('EpLen', average_only=True)
@@ -508,8 +623,7 @@ def td3(env_fn: Callable,
             logger.log_tabular('Q2Vals', with_min_and_max=True)
             logger.log_tabular('LossPi', average_only=True)
             logger.log_tabular('LossQ', average_only=True)
-            logger.log_tabular('Time', time_elapsed)
-            logger.log_tabular('Total Time', total_time)
+            logger.log_tabular('Time', time.time() - start_time)
             logger.dump_tabular()
 
             # Save model and checkpoint
@@ -524,6 +638,8 @@ def td3(env_fn: Callable,
             if (epoch % save_freq == 0) or (epoch == epochs):
                 if average_test > highest_test_reward:
                     logger.save_state({}, None)
+                    print('Saved highest reward model!')
+                    #time.sleep(2.0)
                     highest_test_reward = average_test
 
                 if save_checkpoint:
@@ -541,15 +657,16 @@ def td3(env_fn: Callable,
                                 'torch_rng_state': torch.get_rng_state(),
                                 'np_rng_state': np.random.get_state(),
                                 'action_space_state': env.action_space.np_random.get_state(),
-                                'env': env,
-                                'test_env': test_env,
+                                #'env': env,
+                                #'test_env': test_env,
                                 'ep_ret': ep_ret,
                                 'ep_len': ep_len,
+                                'threshold2' : threshold2,
+                                'i22' : i22,
                                 'o': o,
                                 'highest_test_reward': highest_test_reward,
-                                'previous_total_time': total_time,
                                 't': t+1}, checkpoint_file)
-                    delete_old_files(checkpoint_path, max_saved_checkpoints)
+                    delete_old_files(checkpoint_path, 2)
 
 
 if __name__ == '__main__':
