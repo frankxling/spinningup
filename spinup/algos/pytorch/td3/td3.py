@@ -415,8 +415,8 @@ def td3(env_fn: Callable,
 
     def get_action(o, noise_scale):
         a = ac.act(torch.as_tensor(o, dtype=torch.float32))
-        a += noise_scale * np.random.randn(act_dim)
-        return np.clip(a, -act_limit, act_limit)
+        a += torch.as_tensor(noise_scale * np.random.randn(act_dim), dtype=torch.float32)
+        return np.clip(a.tolist(), -act_limit, act_limit)
 
     def test_agent():
         sum = 0
