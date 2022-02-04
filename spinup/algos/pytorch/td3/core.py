@@ -28,32 +28,7 @@ class MLPActor(nn.Module):
         self.pi = mlp(pi_sizes, activation, nn.Tanh)
 
     def forward(self, obs):
-        # Return output from network scaled to action space limits.
-        a= torch.as_tensor([1.0, 1.0, 1.0,1.0, 1.0, 1.0, 1.0,1.0, 1.0, 1.0, 1.0,1.0])
-        if len(obs.size())==1:
-            if obs[24].tolist()== -1:
-                a[0],a[4],a[8]=torch.as_tensor([0,0,0])
-            if obs[25].tolist()== -1:
-                a[1],a[5],a[9]=torch.as_tensor([0,0,0])
-            if obs[26].tolist()== -1:
-                a[2],a[6],a[10]=torch.as_tensor([0,0,0])
-            if obs[27].tolist()== -1:
-                a[3],a[7],a[11]=torch.as_tensor([0,0,0]) #obs[24:28]
-        elif len(obs.size())==2: #how to fix one batch with same only?  o2 previous 
-        
-            if int(obs[0][24].tolist())== -1:
-                a[0],a[4],a[8]=torch.as_tensor([0,0,0])
-            if int(obs[0][25].tolist())== -1:
-                a[1],a[5],a[9]=torch.as_tensor([0,0,0])
-            if int(obs[0][26].tolist())== -1:
-                a[2],a[6],a[10]=torch.as_tensor([0,0,0])
-            if int(obs[0][27].tolist())== -1:
-                a[3],a[7],a[11]=torch.as_tensor([0,0,0])
-        else:
-            print('something wrong with obs')
-        #TODO MASKING AT HERE !!! #training no need mask, testing just masking TODO here 
-        return self.pi(obs)  * a
-
+        return self.pi(obs) 
 
 class MLPQFunction(nn.Module):
 

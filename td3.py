@@ -349,18 +349,6 @@ def td3(env_fn: Callable,
             epsilon = torch.clamp(epsilon, -noise_clip, noise_clip)
             a2 = pi_targ + epsilon
             a2 = torch.clamp(a2, -act_limit, act_limit)
-            o2_action= torch.ones(a2.size())
-            for i in range (a2.size()[0]):
-                if int(o2[i][24].tolist())== -1:
-                    a[3],a[7],a[11]=torch.tensor([0,0,0])
-                    o2_action[i][0],o2_action[i][4],o2_action[i][8]=torch.tensor([0,0,0])
-                if int(o2[i][25].tolist())== -1:
-                    o2_action[i][1],o2_action[i][5],o2_action[i][9]=torch.tensor([0,0,0])
-                if int(o2[i][26].tolist())== -1:
-                    o2_action[i][2],o2_action[i][6],o2_action[i][10]=torch.tensor([0,0,0])
-                if int(o2[i][27].tolist())== -1:
-                    o2_action[i][3],o2_action[i][7],o2_action[i][11]=torch.tensor([0,0,0])
-            a2 = a2 *o2_action
             # Target Q-values
             q1_pi_targ = ac_targ.q1(o2, a2)  #criticize o2 and a2. whether during o2 , do a2 okay or not. 
             q2_pi_targ = ac_targ.q2(o2, a2)   #criticize o2 and a2. whether during o2 , do a2 okay or not. 
@@ -407,29 +395,7 @@ def td3(env_fn: Callable,
             # Next run one gradient descent step for pi.
             pi_optimizer.zero_grad()
             loss_pi = compute_loss_pi(data)
-
-
-            #for n, w in ac.pi.named_parameters(): 
-                #if n =='pi.0.weight':  
-                    #print(w[0],'w[0]\n', w[64],'w[64]\n',w[129],'w[129]\n',w[193],'w[193]\n')
-                    #print(w.grad,int(data['gaits'].tolist()),' w.grad[0] , gait \n')
-            
-
-
-
-            loss_pi.backward()  
-            
-            # for n, w in ac.pi.named_parameters(): 
-            #     if n =='pi.0.weight':  
-                
-            #         #print(w[0],'w[0]\n', w[64],'w[64]\n',w[129],'w[129]\n',w[193],'w[193]\n')
-            #         if int(data['gaits'].tolist()) == 2: #1001
-            #             w.grad[64:128] , w.grad[128:192]=0,0
-            #         elif int(data['gaits'].tolist()) == 3: #0110#len(w.grada)
-            #             w.grad[0:64], w.grad[192:256]=0,0
-                    #print(w.grad[0],int(data['gaits'].tolist()),' w.grad[0] , gait \n',w.grad[64],'w.grad[64]\n',w.grad[129],'w.grad[129]\n',w.grad[193],'w.grad[193]\n')
-            
-            
+            loss_pi.backward() 
             pi_optimizer.step()
 
             # Unfreeze Q-networks so you can optimize it at next DDPG step.
@@ -449,15 +415,8 @@ def td3(env_fn: Callable,
 
     def get_action(o, noise_scale):
         a = ac.act(torch.as_tensor(o, dtype=torch.float32))
-        a = np.array(a.tolist())
         a += noise_scale * np.random.randn(act_dim)
         return np.clip(a, -act_limit, act_limit)
-
-    def observation_noise(o):
-        noise = 0.01 * np.random.randn(obs_dim)
-        noise[24:29] = [0, 0, 0, 0, 0]
-        o_n = o + noise
-        return o_n
 
     def test_agent():
         sum = 0
@@ -467,12 +426,7 @@ def td3(env_fn: Callable,
             #test_env.render()
             while not (d or (ep_len == max_ep_len)):
                 # Take deterministic actions at test time (noise_scale=0)
-                #scaled_obs = scale_obs(env.observation_space, o)
-                #scaled_o_noise = observation_noise(scaled_obs)
-                #o_noise = unscale_obs(env.observation_space, scaled_o_noise)
                 scaled_action = get_action(o, 0)
-                #a_o_noise = ac.act(torch.as_tensor(o_noise, dtype=torch.float32))
-                #test_env.task.get_obs_noise_action (scaled_action, a_o_noise)
                 o, r, d, _ = test_env.step(unscale_action(env.action_space, scaled_action),threshold3 )#,q_lr, explo
                 ep_ret += r
                 ep_len += 1
@@ -514,58 +468,7 @@ def td3(env_fn: Callable,
             a = scale_action(env.action_space, unscaled_action)
             
         threshold3=epsilon_fn(t)
-
-        #TODO last timestep 
-
-        # if t > 400000 and ep_len>900:
-        #     i22+=1
-        #     if i22 > 1000 and (i22 % 1000) < 5: 
-        #         if threshold2 <= 0.3:
-        #             threshold2 -= 0.01
-        #         else:
-        #             threshold2 -= 0.1 
-        #     if threshold2 < 0.01:
-        #         threshold2 = 0.01
-                
-        #     if np.random.rand() > threshold2:
-        #         a = get_action(o, act_noise_fn(i22))
-        #         unscaled_action = unscale_action(env.action_space, a)
-        #     else:
-        #         unscaled_action = env.action_space.sample()
-        #         a = scale_action(env.action_space, unscaled_action)
-
-        #     threshold3 = threshold2            
         
-            
-            
-
-        if int(o[24])== -1:
-            unscaled_action[0],unscaled_action[4],unscaled_action[8]=0,0,0
-            a[0],a[4],a[8]=0,0,0
-        if int(o[25])== -1:
-            unscaled_action[1],unscaled_action[5],unscaled_action[9]=0,0,0
-            a[1],a[5],a[9]=0,0,0
-        if int(o[26])== -1:
-            unscaled_action[2],unscaled_action[6],unscaled_action[10]=0,0,0
-            a[2],a[6],a[10]=0,0,0
-        if int(o[27])== -1:
-            unscaled_action[3],unscaled_action[7],unscaled_action[11]=0,0,0
-            a[3],a[7],a[11]=0,0,0
-        
-        #scaled_obs = scale_obs(env.observation_space, o)
-        #print ("scaled_obs:")
-        #print(scaled_obs)
-        #scaled_o_noise = observation_noise(scaled_obs)
-        #print ("scaled_o_noise:")
-        #print(scaled_o_noise)
-        #o_noise = unscale_obs(env.observation_space, scaled_o_noise)
-        #print ("o:")
-        #print(o)
-        #print ("o_noise:")
-        #print(o_noise)
-        #a_real = ac.act(torch.as_tensor(o, dtype=torch.float32))
-        #a_o_noise = ac.act(torch.as_tensor(o_noise, dtype=torch.float32))
-        #env.task.get_obs_noise_action (a_real, a_o_noise)
         # Step the env
         o2, r, d, _ = env.step(unscaled_action,threshold3)#,threshold2)
         ep_ret += r
@@ -612,8 +515,6 @@ def td3(env_fn: Callable,
 
             # Log info about epoch
             logger.log_tabular('Epoch', epoch)
-            logger.log_tabular('last threshold', threshold2)
-            logger.log_tabular('i22', i22)
             logger.log_tabular('EpRet', with_min_and_max=True)
             logger.log_tabular('TestEpRet', with_min_and_max=True)
             logger.log_tabular('EpLen', average_only=True)
