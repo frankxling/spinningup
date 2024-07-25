@@ -18,7 +18,7 @@ setup(
         'numpy',
         'pandas',
         'psutil',
-        'torch==1.5.1',
+        'torch==2.2.0',
         'tqdm'
     ],
     description="Teaching tools for introducing people to deep RL.",
